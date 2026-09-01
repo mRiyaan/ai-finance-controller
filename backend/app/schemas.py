@@ -1,15 +1,21 @@
 from typing import Optional, List
+
 from pydantic import BaseModel, Field, field_validator
 
 from .cleaners import (
-    normalize_amount_to_paise,
-    parse_datetime_to_iso,
     normalize_identifier,
-    get_bank_reference_or_utr,
+    parse_datetime_to_iso,
 )
 
 
-# Raw input models (for clarity)
+# Raw input models
+# These models represent values read directly from CSV files.
+# Raw amount fields remain strings because CSV values can contain:
+# "1,250.00", "₹1,250.00", "", etc.
+#
+# Conversion from raw rupees to integer paise belongs in the
+# preprocessing / CSV ingestion layer, not in canonical models.
+
 
 class RawMerchantRow(BaseModel):
     merchant_order_id: Optional[str] = None
@@ -52,6 +58,18 @@ class RawBankRow(BaseModel):
 
 
 # Canonical internal models
+# IMPORTANT CONTRACT:
+#
+# Every field ending in *_paise is already an integer paise value.
+#
+# Example:
+# CSV input: "976.40"
+# preprocessing: normalize_amount_to_paise("976.40") -> 97640
+# canonical model: CanonicalBankRow(credit_paise=97640)
+#
+# Do NOT call normalize_amount_to_paise() inside these models.
+# Doing so would multiply canonical paise values by 100 again.
+
 
 class CanonicalMerchantRow(BaseModel):
     merchant_order_id: Optional[str] = None
@@ -62,20 +80,42 @@ class CanonicalMerchantRow(BaseModel):
     order_status: Optional[str] = None
     source_system: Optional[str] = None
 
-    @field_validator("gross_amount_paise", mode="before")
+    @field_validator(
+        "merchant_order_id",
+        "gateway_order_id",
+        "customer_reference",
+        mode="before",
+    )
     @classmethod
-    def validate_gross_amount_paise(cls, v):
-        return normalize_amount_to_paise(v)
-
-    @field_validator("gateway_order_id", "merchant_order_id", "customer_reference", mode="before")
-    @classmethod
-    def normalize_optional_id(cls, v):
-        return normalize_identifier(v)
+    def normalize_optional_identifier_fields(cls, value):
+        return normalize_identifier(value)
 
     @field_validator("order_created_at", mode="before")
     @classmethod
-    def parse_order_created_at(cls, v):
-        return parse_datetime_to_iso(v)
+    def parse_order_created_at(cls, value):
+        return parse_datetime_to_iso(value)
+
+    @field_validator("order_status", "source_system", mode="before")
+    @classmethod
+    def clean_optional_text_fields(cls, value):
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("gross_amount_paise", mode="before")
+    @classmethod
+    def validate_gross_amount_paise(cls, value):
+        if value is None:
+            raise ValueError("gross_amount_paise is required")
+
+        integer_value = int(value)
+
+        if integer_value < 0:
+            raise ValueError("gross_amount_paise cannot be negative")
+
+        return integer_value
 
 
 class CanonicalRazorpayRow(BaseModel):
@@ -96,13 +136,6 @@ class CanonicalRazorpayRow(BaseModel):
     settlement_utr: Optional[str] = None
     settled_by: Optional[str] = None
 
-    @field_validator("amount_paise", "fee_paise", "tax_paise", "debit_paise", "credit_paise", mode="before")
-    @classmethod
-    def validate_amount_fields(cls, v):
-        if v is None:
-            return 0
-        return normalize_amount_to_paise(v)
-
     @field_validator(
         "entity_id",
         "order_id",
@@ -110,16 +143,51 @@ class CanonicalRazorpayRow(BaseModel):
         "settlement_utr",
         "payment_method",
         "settled_by",
+        "currency",
         mode="before",
     )
     @classmethod
-    def normalize_optional_id(cls, v):
-        return normalize_identifier(v)
+    def normalize_identifier_fields(cls, value):
+        return normalize_identifier(value)
 
-    @field_validator("entity_created_at", "payment_captured_at", "settled_at", mode="before")
+    @field_validator("transaction_entity", mode="before")
     @classmethod
-    def parse_date_fields(cls, v):
-        return parse_datetime_to_iso(v)
+    def clean_transaction_entity(cls, value):
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        return text.lower() or None
+
+    @field_validator(
+        "entity_created_at",
+        "payment_captured_at",
+        "settled_at",
+        mode="before",
+    )
+    @classmethod
+    def parse_date_fields(cls, value):
+        return parse_datetime_to_iso(value)
+
+    @field_validator(
+        "amount_paise",
+        "fee_paise",
+        "tax_paise",
+        "debit_paise",
+        "credit_paise",
+        mode="before",
+    )
+    @classmethod
+    def validate_paise_fields(cls, value):
+        if value is None:
+            return 0
+
+        integer_value = int(value)
+
+        if integer_value < 0:
+            raise ValueError("Razorpay paise fields cannot be negative")
+
+        return integer_value
 
 
 class CanonicalBankRow(BaseModel):
@@ -133,49 +201,77 @@ class CanonicalBankRow(BaseModel):
     currency: Optional[str] = None
     utr: Optional[str] = None
 
-    @field_validator("debit_paise", "credit_paise", "balance_paise", mode="before")
-    @classmethod
-    def validate_amount_fields(cls, v):
-        if v is None:
-            return 0
-        return normalize_amount_to_paise(v)
-
-    @field_validator("utr", mode="before")
-    @classmethod
-    def compute_utr(cls, v, info):
-        # v here is the raw utr field if we decide to pass one; for MVP we compute from reference+description
-        return None  # will be set explicitly in parsing logic using get_bank_reference_or_utr
-
     @field_validator("transaction_date", "value_date", mode="before")
     @classmethod
-    def parse_date_fields(cls, v):
-        return parse_datetime_to_iso(v)
+    def parse_date_fields(cls, value):
+        return parse_datetime_to_iso(value)
 
-    @field_validator("reference_number", "description", mode="before")
+    @field_validator(
+        "reference_number",
+        "utr",
+        "currency",
+        mode="before",
+    )
     @classmethod
-    def normalize_text(cls, v):
-        if v is None:
+    def normalize_identifier_fields(cls, value):
+        # Critical: this preserves a supplied/extracted UTR.
+        # It does not overwrite it with None.
+        return normalize_identifier(value)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def clean_description(cls, value):
+        if value is None:
             return None
-        return str(v).strip()
+
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("debit_paise", "credit_paise", mode="before")
+    @classmethod
+    def validate_nonnegative_paise_fields(cls, value):
+        # These values are already paise; do not call
+        # normalize_amount_to_paise() here.
+        if value is None:
+            return 0
+
+        integer_value = int(value)
+
+        if integer_value < 0:
+            raise ValueError("debit_paise and credit_paise cannot be negative")
+
+        return integer_value
+
+    @field_validator("balance_paise", mode="before")
+    @classmethod
+    def validate_balance_paise(cls, value):
+        # A bank balance can be negative for overdraft accounts,
+        # so negative values are allowed.
+        if value is None:
+            return 0
+
+        return int(value)
 
 
 # Dead-letter / validation error model
 
+
 class DeadLetterRow(BaseModel):
     row_index: int
-    source: str  # "merchant", "razorpay", "bank"
-    error_code: str  # e.g. "SCHEMA_VALIDATION_FAILED"
+    source: str
+    error_code: str
     error_message: str
     raw_row: dict
 
 
-# Matched and exception result models
+# Match and exception result models
+
 
 class MatchedLedgerRazorpay(BaseModel):
     merchant_order_id: Optional[str] = None
     gateway_order_id: str
     amount_paise: int
-    match_method: str  # "EXACT_ORDER_ID"
+    match_method: str
     razorpay_entity_id: str
     razorpay_settlement_id: Optional[str] = None
 
@@ -196,7 +292,7 @@ class MatchedSettlementBank(BaseModel):
     expected_net_paise: int
     bank_credit_paise: int
     bank_reference: Optional[str] = None
-    match_method: str  # "EXACT_UTR"
+    match_method: str
 
 
 class SettlementAmountMismatch(BaseModel):
@@ -210,18 +306,67 @@ class SettlementAmountMismatch(BaseModel):
 
 class UnresolvedRecord(BaseModel):
     record_id: str
-    source: str  # "ledger", "razorpay", "bank"
-    reason: str  # e.g. "NO_EXACT_ORDER_ID", "NO_EXACT_UTR"
+    source: str
+    reason: str
     context: dict = Field(default_factory=dict)
 
+class Stage3HandoffResponse(BaseModel):
+    record: UnresolvedRecord
+    status: str  # "POTENTIAL_FUZZY_MATCH" or "EXCEPTION"
+    score: float
+    amount_diff_paise: int
+    date_diff_days: Optional[int] = None
+    error_code: Optional[str] = None
+    failed_gates: List[str] = Field(default_factory=list)
+    reason: str
 
-# Final reconciliation result
+# Combined Stage 1 + Stage 2 API response model
+class FullReconciliationResult(BaseModel):
+    matched_ledger_razorpay: List[MatchedLedgerRazorpay] = Field(
+        default_factory=list
+    )
+    fuzzy_ledger_matches: List[MatchedLedgerRazorpay] = Field(
+        default_factory=list
+    )
+    amount_mismatches: List[AmountMismatchRecord] = Field(
+        default_factory=list
+    )
+    matched_settlements_bank: List[MatchedSettlementBank] = Field(
+        default_factory=list
+    )
+    fuzzy_settlement_matches: List[MatchedSettlementBank] = Field(
+        default_factory=list
+    )
+    settlement_amount_mismatches: List[SettlementAmountMismatch] = Field(
+        default_factory=list
+    )
+    stage3_handoffs: List[Stage3HandoffResponse] = Field(
+        default_factory=list
+    )
+    dead_letters: List[DeadLetterRow] = Field(
+        default_factory=list
+    )
+    summary: dict = Field(default_factory=dict)
 
+
+# Stage 1 internal result model
 class ReconciliationResult(BaseModel):
-    matched_ledger_razorpay: List[MatchedLedgerRazorpay] = Field(default_factory=list)
-    amount_mismatches: List[AmountMismatchRecord] = Field(default_factory=list)
-    matched_settlements_bank: List[MatchedSettlementBank] = Field(default_factory=list)
-    settlement_amount_mismatches: List[SettlementAmountMismatch] = Field(default_factory=list)
-    unresolved_records: List[UnresolvedRecord] = Field(default_factory=list)
-    dead_letters: List[DeadLetterRow] = Field(default_factory=list)
+    matched_ledger_razorpay: List[MatchedLedgerRazorpay] = Field(
+        default_factory=list
+    )
+    amount_mismatches: List[AmountMismatchRecord] = Field(
+        default_factory=list
+    )
+    matched_settlements_bank: List[MatchedSettlementBank] = Field(
+        default_factory=list
+    )
+    settlement_amount_mismatches: List[SettlementAmountMismatch] = Field(
+        default_factory=list
+    )
+    unresolved_records: List[UnresolvedRecord] = Field(
+        default_factory=list
+    )
+    dead_letters: List[DeadLetterRow] = Field(
+        default_factory=list
+    )
     summary: dict = Field(default_factory=dict)

@@ -2,8 +2,27 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime
 import re
 from typing import Optional
+from dateutil import parser as dateutil_parser
+
+
+# Unified date formats list (used by parse_datetime_to_iso)
+DATE_INPUT_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",      # 2026-08-27 10:15:00
+    "%Y-%m-%d",               # 2026-08-27
+    "%d/%m/%Y %H:%M:%S",      # 27/08/2026 10:15:00
+    "%d/%m/%Y",               # 27/08/2026
+    "%m/%d/%Y %H:%M:%S",      # 08/27/2026 10:15:00
+    "%m/%d/%Y",               # 08/27/2026
+    "%Y-%m-%dT%H:%M:%S",      # 2026-08-27T10:15:00
+    "%Y-%m-%dT%H:%M:%SZ",     # 2026-08-27T10:15:00Z
+    "%d-%m-%Y %H:%M:%S",      # 27-08-2026 10:15:00
+    "%d-%m-%Y",               # 27-08-2026
+    "%Y/%m/%d %H:%M:%S",      # 2026/08/27 10:15:00
+    "%Y/%m/%d",               # 2026/08/27
+)
 
 PAISE_PER_RUPEE = 100
+
 
 def normalize_amount_to_paise(raw: Optional[str]) -> int:
     """
@@ -33,34 +52,32 @@ def normalize_amount_to_paise(raw: Optional[str]) -> int:
     return paise
 
 
-DATE_INPUT_FORMATS = (
-    "%Y-%m-%d %H:%M:%S",  # e.g. 2026-08-27 10:15:00
-    "%Y-%m-%d",           # e.g. 2026-08-27
-)
-
-
 def parse_datetime_to_iso(raw: Optional[str]) -> Optional[str]:
     """
-    Parse a raw date/time string into an ISO 8601 timestamp string.
+    Parse a date/time string from various common formats and return an ISO string.
 
-    Returns None for blank/None inputs.
-    Raises ValueError if no known format matches.
+    Returns None for None or empty strings.
+    Raises ValueError if the format cannot be recognized.
     """
-    if raw is None:
+    if raw is None or (isinstance(raw, str) and raw.strip() == ""):
         return None
 
-    text = str(raw).strip()
-    if text == "":
-        return None
+    raw = raw.strip()
 
+    # Try explicit formats first (fast and deterministic)
     for fmt in DATE_INPUT_FORMATS:
         try:
-            dt = datetime.strptime(text, fmt)
+            dt = datetime.strptime(raw, fmt)
             return dt.isoformat()
         except ValueError:
             continue
 
-    raise ValueError(f"Unrecognized date format: {raw}")
+    # Fallback: dateutil parser for flexible, real-world CSV formats
+    try:
+        dt = dateutil_parser.parse(raw)
+        return dt.isoformat()
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError(f"Unrecognized date format: {raw}")
 
 
 def normalize_identifier(raw: Optional[str]) -> Optional[str]:
