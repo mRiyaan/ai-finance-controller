@@ -1,56 +1,80 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
+
+from .schemas import FullReconciliationResult
 import pandas as pd
 from pydantic import ValidationError
 
 from .cleaners import (
-    normalize_amount_to_paise,
-    parse_datetime_to_iso,
-    normalize_identifier,
     get_bank_reference_or_utr,
+    normalize_amount_to_paise,
 )
 from .schemas import (
+    AmountMismatchRecord,
+    CanonicalBankRow,
     CanonicalMerchantRow,
     CanonicalRazorpayRow,
-    CanonicalBankRow,
     DeadLetterRow,
     MatchedLedgerRazorpay,
-    AmountMismatchRecord,
     MatchedSettlementBank,
+    ReconciliationResult,
     SettlementAmountMismatch,
     UnresolvedRecord,
-    ReconciliationResult,
+    FullReconciliationResult,
+    Stage3HandoffResponse,
 )
+from .stage2_fuzzy_match import reconcile_fuzzy, Stage3Handoff
 
+def _optional_amount_to_paise(value: Any) -> int:
+    """
+    Convert an optional raw rupee amount to paise.
 
-def _load_merchant_df(raw_df: pd.DataFrame) -> tuple[List[CanonicalMerchantRow], List[DeadLetterRow]]:
+    Missing or blank values are interpreted as zero.
+    Non-blank invalid values still raise ValueError and become dead letters.
+    """
+    if value is None:
+        return 0
+
+    if isinstance(value, str) and value.strip() == "":
+        return 0
+
+    return normalize_amount_to_paise(value)
+
+def _load_merchant_df(
+    raw_df: pd.DataFrame,
+) -> tuple[List[CanonicalMerchantRow], List[DeadLetterRow]]:
     """
     Validate and canonicalize merchant ledger rows.
-    Returns (clean_rows, dead_letters).
+
+    Raw gross_amount is converted to integer paise before the
+    CanonicalMerchantRow is created.
     """
     clean_rows: List[CanonicalMerchantRow] = []
     dead_letters: List[DeadLetterRow] = []
 
     for idx, row in raw_df.iterrows():
         try:
-            # Map raw CSV columns to canonical field names expected by CanonicalMerchantRow
             mapped = {
                 "merchant_order_id": row.get("merchant_order_id"),
                 "gateway_order_id": row.get("gateway_order_id"),
-                "gross_amount_paise": row.get("gross_amount"),
+                "gross_amount_paise": normalize_amount_to_paise(
+                    row.get("gross_amount")
+                ),
                 "order_created_at": row.get("order_created_at"),
                 "customer_reference": row.get("customer_reference"),
                 "order_status": row.get("order_status"),
                 "source_system": row.get("source_system"),
             }
+
             canonical = CanonicalMerchantRow(**mapped)
             clean_rows.append(canonical)
-        except (ValidationError, ValueError, KeyError, TypeError) as e:
+
+        except (ValidationError, ValueError, KeyError, TypeError) as error:
             dead_letters.append(
                 DeadLetterRow(
                     row_index=int(idx),
                     source="merchant",
                     error_code="SCHEMA_VALIDATION_FAILED",
-                    error_message=str(e),
+                    error_message=str(error),
                     raw_row=row.to_dict(),
                 )
             )
@@ -58,10 +82,14 @@ def _load_merchant_df(raw_df: pd.DataFrame) -> tuple[List[CanonicalMerchantRow],
     return clean_rows, dead_letters
 
 
-def _load_razorpay_df(raw_df: pd.DataFrame) -> tuple[List[CanonicalRazorpayRow], List[DeadLetterRow]]:
+def _load_razorpay_df(
+    raw_df: pd.DataFrame,
+) -> tuple[List[CanonicalRazorpayRow], List[DeadLetterRow]]:
     """
-    Validate and canonicalize Razorpay settlement reconciliation rows.
-    Returns (clean_rows, dead_letters).
+    Validate and canonicalize Razorpay reconciliation report rows.
+
+    Raw Razorpay report amounts are converted to integer paise before
+    the CanonicalRazorpayRow is created.
     """
     clean_rows: List[CanonicalRazorpayRow] = []
     dead_letters: List[DeadLetterRow] = []
@@ -71,12 +99,22 @@ def _load_razorpay_df(raw_df: pd.DataFrame) -> tuple[List[CanonicalRazorpayRow],
             mapped = {
                 "transaction_entity": row.get("transaction_entity"),
                 "entity_id": row.get("entity_id"),
-                "amount_paise": row.get("amount"),
+                "amount_paise": normalize_amount_to_paise(
+                    row.get("amount")
+                ),
                 "currency": row.get("currency"),
-                "fee_paise": row.get("fee (exclusive tax)"),
-                "tax_paise": row.get("tax"),
-                "debit_paise": row.get("debit"),
-                "credit_paise": row.get("credit"),
+                "fee_paise": _optional_amount_to_paise(
+                    row.get("fee (exclusive tax)")
+                ),
+                "tax_paise": _optional_amount_to_paise(
+                    row.get("tax")
+                ),
+                "debit_paise": _optional_amount_to_paise(
+                    row.get("debit")
+                ),
+                "credit_paise": _optional_amount_to_paise(
+                    row.get("credit")
+                ),
                 "payment_method": row.get("payment_method"),
                 "entity_created_at": row.get("entity_created_at"),
                 "payment_captured_at": row.get("payment_captured_at"),
@@ -86,15 +124,17 @@ def _load_razorpay_df(raw_df: pd.DataFrame) -> tuple[List[CanonicalRazorpayRow],
                 "settlement_utr": row.get("settlement_utr"),
                 "settled_by": row.get("settled_by"),
             }
+
             canonical = CanonicalRazorpayRow(**mapped)
             clean_rows.append(canonical)
-        except (ValidationError, ValueError, KeyError, TypeError) as e:
+
+        except (ValidationError, ValueError, KeyError, TypeError) as error:
             dead_letters.append(
                 DeadLetterRow(
                     row_index=int(idx),
                     source="razorpay",
                     error_code="SCHEMA_VALIDATION_FAILED",
-                    error_message=str(e),
+                    error_message=str(error),
                     raw_row=row.to_dict(),
                 )
             )
@@ -102,51 +142,57 @@ def _load_razorpay_df(raw_df: pd.DataFrame) -> tuple[List[CanonicalRazorpayRow],
     return clean_rows, dead_letters
 
 
-def _load_bank_df(raw_df: pd.DataFrame) -> tuple[List[CanonicalBankRow], List[DeadLetterRow]]:
+def _load_bank_df(
+    raw_df: pd.DataFrame,
+) -> tuple[List[CanonicalBankRow], List[DeadLetterRow]]:
     """
     Validate and canonicalize bank statement rows.
-    Returns (clean_rows, dead_letters).
 
-    This function:
-    - Uses get_bank_reference_or_utr to compute a canonical UTR from reference_number + description.
-    - Populates the utr field explicitly after model construction.
+    - Converts debit, credit, and balance from raw rupee strings to paise.
+    - Obtains UTR deterministically from reference_number first, otherwise
+      extracts it from description/narration.
     """
     clean_rows: List[CanonicalBankRow] = []
     dead_letters: List[DeadLetterRow] = []
 
     for idx, row in raw_df.iterrows():
         try:
-            ref = row.get("reference_number")
+            reference_number = row.get("reference_number")
             description = row.get("description")
 
-            # Compute canonical UTR/reference using deterministic Stage 1 logic
-            utr = get_bank_reference_or_utr(ref, description)
+            utr = get_bank_reference_or_utr(
+                reference_number,
+                description,
+            )
 
             mapped = {
                 "transaction_date": row.get("transaction_date"),
                 "value_date": row.get("value_date"),
                 "description": description,
-                "reference_number": ref,
-                "debit_paise": row.get("debit"),
-                "credit_paise": row.get("credit"),
-                "balance_paise": row.get("balance"),
+                "reference_number": reference_number,
+                "debit_paise": _optional_amount_to_paise(
+                    row.get("debit")
+                ),
+                "credit_paise": _optional_amount_to_paise(
+                    row.get("credit")
+                ),
+                "balance_paise": _optional_amount_to_paise(
+                    row.get("balance")
+                ),
                 "currency": row.get("currency"),
-                # We'll set utr manually after validation, since the validator currently returns None
                 "utr": utr,
             }
 
             canonical = CanonicalBankRow(**mapped)
-            # Force utr to the computed value (validator currently ignores input)
-            canonical.utr = utr
-
             clean_rows.append(canonical)
-        except (ValidationError, ValueError, KeyError, TypeError) as e:
+
+        except (ValidationError, ValueError, KeyError, TypeError) as error:
             dead_letters.append(
                 DeadLetterRow(
                     row_index=int(idx),
                     source="bank",
                     error_code="SCHEMA_VALIDATION_FAILED",
-                    error_message=str(e),
+                    error_message=str(error),
                     raw_row=row.to_dict(),
                 )
             )
@@ -160,20 +206,16 @@ def _aggregate_razorpay_by_settlement(
     """
     Aggregate Razorpay rows by settlement_id.
 
-    For each settlement_id:
-    - Sum amount_paise, fee_paise, tax_paise.
-    - Take first settlement_utr, settled_at.
-    - Compute expected_net_paise = sum(amount) - sum(fee) - sum(tax).
-
-    Returns a list of dicts suitable for building a DataFrame.
+    expected_net_paise =
+        sum(amount_paise) - sum(fee_paise) - sum(tax_paise)
     """
-    df = pd.DataFrame([r.model_dump() for r in razorpay_rows])
+    dataframe = pd.DataFrame([row.model_dump() for row in razorpay_rows])
 
-    if df.empty:
+    if dataframe.empty:
         return []
 
     grouped = (
-        df.groupby("settlement_id", dropna=True)
+        dataframe.groupby("settlement_id", dropna=True)
         .agg(
             gross_sum_paise=("amount_paise", "sum"),
             fee_sum_paise=("fee_paise", "sum"),
@@ -200,25 +242,17 @@ def reconcile(
     bank_df: pd.DataFrame,
 ) -> ReconciliationResult:
     """
-    Stage 1 reconciliation:
+    Run Stage 1 deterministic reconciliation.
 
-    1. Validate and canonicalize all three sources.
-    2. Exact join: merchant.gateway_order_id == razorpay.order_id, then verify amount.
-    3. Aggregate Razorpay by settlement_id.
-    4. Exact join: settlement_utr == bank.utr, then verify net amount.
-    5. Return a ReconciliationResult with:
-       - matched_ledger_razorpay
-       - amount_mismatches
-       - matched_settlements_bank
-       - settlement_amount_mismatches
-       - unresolved_records
-       - dead_letters
-       - summary
+    1. Validate and canonicalize merchant, Razorpay, and bank rows.
+    2. Exact-match ledger.gateway_order_id to Razorpay.order_id.
+    3. Verify matching order amounts in paise.
+    4. Aggregate Razorpay amounts, fees, and tax by settlement.
+    5. Exact-match settlement UTR to bank UTR.
+    6. Verify settlement net amount equals bank credit in paise.
     """
-
     all_dead_letters: List[DeadLetterRow] = []
 
-    # 1. Load and validate each source
     merchant_rows, merchant_dead = _load_merchant_df(merchant_df)
     razorpay_rows, razorpay_dead = _load_razorpay_df(razorpay_df)
     bank_rows, bank_dead = _load_bank_df(bank_df)
@@ -227,13 +261,19 @@ def reconcile(
     all_dead_letters.extend(razorpay_dead)
     all_dead_letters.extend(bank_dead)
 
-    # 2. Exact join: merchant <-> razorpay on gateway_order_id / order_id
     matched_ledger_razorpay: List[MatchedLedgerRazorpay] = []
     amount_mismatches: List[AmountMismatchRecord] = []
     unresolved_ledger: List[UnresolvedRecord] = []
 
-    merchant_df_clean = pd.DataFrame([r.model_dump() for r in merchant_rows])
-    razorpay_df_clean = pd.DataFrame([r.model_dump() for r in razorpay_rows])
+    merchant_df_clean = pd.DataFrame(
+        [row.model_dump() for row in merchant_rows]
+    )
+    razorpay_df_clean = pd.DataFrame(
+        [row.model_dump() for row in razorpay_rows]
+    )
+
+    
+    # Exact join A: Merchant ledger ↔ Razorpay order ID
 
     if not merchant_df_clean.empty and not razorpay_df_clean.empty:
         ledger_rz = merchant_df_clean.merge(
@@ -244,21 +284,21 @@ def reconcile(
             suffixes=("_ledger", "_rz"),
         )
 
-        matched_order_ids = set()
+        matched_gateway_ids = set()
 
         for _, row in ledger_rz.iterrows():
             gateway_id = row["gateway_order_id"]
-            merchant_amt = int(row["gross_amount_paise"])
-            rz_amt = int(row["amount_paise"])
+            merchant_amount = int(row["gross_amount_paise"])
+            razorpay_amount = int(row["amount_paise"])
 
-            matched_order_ids.add(gateway_id)
+            matched_gateway_ids.add(gateway_id)
 
-            if merchant_amt == rz_amt:
+            if merchant_amount == razorpay_amount:
                 matched_ledger_razorpay.append(
                     MatchedLedgerRazorpay(
                         merchant_order_id=row.get("merchant_order_id"),
                         gateway_order_id=gateway_id,
-                        amount_paise=merchant_amt,
+                        amount_paise=merchant_amount,
                         match_method="EXACT_ORDER_ID",
                         razorpay_entity_id=row["entity_id"],
                         razorpay_settlement_id=row.get("settlement_id"),
@@ -269,77 +309,98 @@ def reconcile(
                     AmountMismatchRecord(
                         merchant_order_id=row.get("merchant_order_id"),
                         gateway_order_id=gateway_id,
-                        merchant_amount_paise=merchant_amt,
-                        razorpay_amount_paise=rz_amt,
+                        merchant_amount_paise=merchant_amount,
+                        razorpay_amount_paise=razorpay_amount,
                         razorpay_entity_id=row["entity_id"],
                         razorpay_settlement_id=row.get("settlement_id"),
                     )
                 )
 
-        # Unresolved merchant rows: those not matched on gateway_order_id
-        all_merchant_ids = set(merchant_df_clean["gateway_order_id"].dropna().unique())
-        unresolved_merchant_ids = all_merchant_ids - matched_order_ids
+        all_gateway_ids = set(
+            merchant_df_clean["gateway_order_id"].dropna().unique()
+        )
+        unresolved_gateway_ids = all_gateway_ids - matched_gateway_ids
 
-        # Build unresolved records for merchant side
         for _, row in merchant_df_clean.iterrows():
-            gid = row["gateway_order_id"]
-            if gid in unresolved_merchant_ids:
+            gateway_id = row["gateway_order_id"]
+
+            if gateway_id in unresolved_gateway_ids:
                 unresolved_ledger.append(
                     UnresolvedRecord(
-                        record_id=row["merchant_order_id"] or gid,
+                        record_id=row["merchant_order_id"] or gateway_id,
                         source="ledger",
                         reason="NO_EXACT_ORDER_ID",
-                        context={"gateway_order_id": gid},
+                        context={
+                            "gateway_order_id": gateway_id,
+                            "gross_amount_paise": int(
+                                row["gross_amount_paise"]
+                            ),
+                        },
                     )
                 )
     else:
-        # If either side is empty, all non-dead rows are unresolved
         for _, row in merchant_df_clean.iterrows():
             unresolved_ledger.append(
                 UnresolvedRecord(
-                    record_id=row["merchant_order_id"] or row["gateway_order_id"],
+                    record_id=row["merchant_order_id"]
+                    or row["gateway_order_id"],
                     source="ledger",
                     reason="NO_EXACT_ORDER_ID",
-                    context={"gateway_order_id": row["gateway_order_id"]},
+                    context={
+                        "gateway_order_id": row["gateway_order_id"],
+                        "gross_amount_paise": int(
+                            row["gross_amount_paise"]
+                        ),
+                    },
                 )
             )
 
-    # 3. Aggregate Razorpay by settlement_id
-    settlement_agg = _aggregate_razorpay_by_settlement(razorpay_rows)
-    settlement_agg_df = pd.DataFrame(settlement_agg) if settlement_agg else pd.DataFrame()
+    
+    # Aggregate Razorpay rows by settlement
 
-    # 4. Exact join: settlement <-> bank on UTR
+    settlement_agg = _aggregate_razorpay_by_settlement(razorpay_rows)
+    settlement_agg_df = (
+        pd.DataFrame(settlement_agg)
+        if settlement_agg
+        else pd.DataFrame()
+    )
+
+    
+    # Exact join B: Razorpay settlement UTR ↔ Bank UTR
+    
     matched_settlements_bank: List[MatchedSettlementBank] = []
     settlement_amount_mismatches: List[SettlementAmountMismatch] = []
     unresolved_settlements: List[UnresolvedRecord] = []
 
-    bank_df_clean = pd.DataFrame([r.model_dump() for r in bank_rows])
+    bank_df_clean = pd.DataFrame(
+        [row.model_dump() for row in bank_rows]
+    )
 
     if not settlement_agg_df.empty and not bank_df_clean.empty:
-        settle_bank = settlement_agg_df.merge(
+        settlement_bank = settlement_agg_df.merge(
             bank_df_clean,
             left_on="settlement_utr",
             right_on="utr",
             how="inner",
-            suffixes=("_settle", "_bank"),
+            suffixes=("_settlement", "_bank"),
         )
 
         matched_settlement_ids = set()
 
-        for _, row in settle_bank.iterrows():
-            sid = row["settlement_id"]
-            expected_net = int(row["expected_net_paise"])
-            bank_credit = int(row["credit_paise"])
+        for _, row in settlement_bank.iterrows():
+            settlement_id = row["settlement_id"]
+            expected_net_paise = int(row["expected_net_paise"])
+            bank_credit_paise = int(row["credit_paise"])
 
-            matched_settlement_ids.add(sid)
+            matched_settlement_ids.add(settlement_id)
 
-            if expected_net == bank_credit:
+            if expected_net_paise == bank_credit_paise:
                 matched_settlements_bank.append(
                     MatchedSettlementBank(
-                        settlement_id=sid,
+                        settlement_id=settlement_id,
                         settlement_utr=row.get("settlement_utr"),
-                        expected_net_paise=expected_net,
-                        bank_credit_paise=bank_credit,
+                        expected_net_paise=expected_net_paise,
+                        bank_credit_paise=bank_credit_paise,
                         bank_reference=row.get("utr"),
                         match_method="EXACT_UTR",
                     )
@@ -347,34 +408,40 @@ def reconcile(
             else:
                 settlement_amount_mismatches.append(
                     SettlementAmountMismatch(
-                        settlement_id=sid,
+                        settlement_id=settlement_id,
                         settlement_utr=row.get("settlement_utr"),
-                        expected_net_paise=expected_net,
-                        bank_credit_paise=bank_credit,
+                        expected_net_paise=expected_net_paise,
+                        bank_credit_paise=bank_credit_paise,
                         bank_reference=row.get("utr"),
                     )
                 )
 
-        # Unresolved settlements: those not matched on UTR
-        all_settlement_ids = set(settlement_agg_df["settlement_id"].unique())
-        unresolved_settlement_ids = all_settlement_ids - matched_settlement_ids
+        all_settlement_ids = set(
+            settlement_agg_df["settlement_id"].dropna().unique()
+        )
+        unresolved_settlement_ids = (
+            all_settlement_ids - matched_settlement_ids
+        )
 
         for _, row in settlement_agg_df.iterrows():
-            sid = row["settlement_id"]
-            if sid in unresolved_settlement_ids:
+            settlement_id = row["settlement_id"]
+
+            if settlement_id in unresolved_settlement_ids:
                 unresolved_settlements.append(
                     UnresolvedRecord(
-                        record_id=sid,
+                        record_id=settlement_id,
                         source="razorpay",
                         reason="NO_EXACT_UTR",
                         context={
                             "settlement_utr": row.get("settlement_utr"),
-                            "expected_net_paise": int(row["expected_net_paise"]),
+                            "expected_net_paise": int(
+                                row["expected_net_paise"]
+                            ),
+                            "settled_at": row.get("settled_at"),
                         },
                     )
                 )
     else:
-        # If either side is empty, all settlements are unresolved
         for _, row in settlement_agg_df.iterrows():
             unresolved_settlements.append(
                 UnresolvedRecord(
@@ -383,12 +450,14 @@ def reconcile(
                     reason="NO_EXACT_UTR",
                     context={
                         "settlement_utr": row.get("settlement_utr"),
-                        "expected_net_paise": int(row["expected_net_paise"]),
+                        "expected_net_paise": int(
+                            row["expected_net_paise"]
+                        ),
+                        "settled_at": row.get("settled_at"),
                     },
                 )
             )
 
-    # 5. Build summary
     summary = {
         "total_merchant_rows": len(merchant_df),
         "total_razorpay_rows": len(razorpay_df),
@@ -396,12 +465,20 @@ def reconcile(
         "valid_merchant_rows": len(merchant_rows),
         "valid_razorpay_rows": len(razorpay_rows),
         "valid_bank_rows": len(bank_rows),
-        "matched_ledger_razorpay_count": len(matched_ledger_razorpay),
+        "matched_ledger_razorpay_count": len(
+            matched_ledger_razorpay
+        ),
         "amount_mismatch_count": len(amount_mismatches),
-        "matched_settlements_bank_count": len(matched_settlements_bank),
-        "settlement_amount_mismatch_count": len(settlement_amount_mismatches),
+        "matched_settlements_bank_count": len(
+            matched_settlements_bank
+        ),
+        "settlement_amount_mismatch_count": len(
+            settlement_amount_mismatches
+        ),
         "unresolved_ledger_count": len(unresolved_ledger),
-        "unresolved_settlement_count": len(unresolved_settlements),
+        "unresolved_settlement_count": len(
+            unresolved_settlements
+        ),
         "dead_letter_count": len(all_dead_letters),
     }
 
@@ -412,5 +489,72 @@ def reconcile(
         settlement_amount_mismatches=settlement_amount_mismatches,
         unresolved_records=unresolved_ledger + unresolved_settlements,
         dead_letters=all_dead_letters,
+        summary=summary,
+    )
+def reconcile_full(
+    merchant_df: pd.DataFrame,
+    razorpay_df: pd.DataFrame,
+    bank_df: pd.DataFrame,
+) -> FullReconciliationResult:
+    """
+    Run Stage 1 exact reconciliation and Stage 2 fuzzy reconciliation.
+
+    Stage 3 is not called yet. Remaining Stage 2 records are returned
+    as stage3_handoffs with their scores and gate-failure information.
+    """
+    # Run the already-tested Stage 1 pipeline.
+    stage1_result = reconcile(
+        merchant_df=merchant_df,
+        razorpay_df=razorpay_df,
+        bank_df=bank_df,
+    )
+
+    # Rebuild the same canonical rows using the same loaders.
+    # This uses the corrected raw-to-paise conversion and UTR extraction.
+    merchant_rows, _ = _load_merchant_df(merchant_df)
+    razorpay_rows, _ = _load_razorpay_df(razorpay_df)
+    bank_rows, _ = _load_bank_df(bank_df)
+
+    fuzzy_ledger_matches, fuzzy_settlement_matches, stage3_handoffs = (
+        reconcile_fuzzy(
+            merchant_rows=merchant_rows,
+            razorpay_rows=razorpay_rows,
+            bank_rows=bank_rows,
+            unresolved_from_stage1=stage1_result.unresolved_records,
+        )
+    )
+
+    stage3_response = [
+        Stage3HandoffResponse(
+            record=handoff["record"],
+            status=handoff["status"],
+            score=handoff["score"],
+            amount_diff_paise=handoff["amount_diff_paise"],
+            date_diff_days=handoff["date_diff_days"],
+            error_code=handoff["error_code"],
+            failed_gates=handoff["failed_gates"],
+            reason=handoff["reason"],
+        )
+        for handoff in stage3_handoffs
+    ]
+
+    summary = {
+        **stage1_result.summary,
+        "fuzzy_ledger_match_count": len(fuzzy_ledger_matches),
+        "fuzzy_settlement_match_count": len(fuzzy_settlement_matches),
+        "stage3_handoff_count": len(stage3_response),
+    }
+
+    return FullReconciliationResult(
+        matched_ledger_razorpay=stage1_result.matched_ledger_razorpay,
+        fuzzy_ledger_matches=fuzzy_ledger_matches,
+        amount_mismatches=stage1_result.amount_mismatches,
+        matched_settlements_bank=stage1_result.matched_settlements_bank,
+        fuzzy_settlement_matches=fuzzy_settlement_matches,
+        settlement_amount_mismatches=(
+            stage1_result.settlement_amount_mismatches
+        ),
+        stage3_handoffs=stage3_response,
+        dead_letters=stage1_result.dead_letters,
         summary=summary,
     )
