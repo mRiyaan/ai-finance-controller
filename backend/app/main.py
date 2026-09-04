@@ -1,12 +1,21 @@
 import io
+
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from .stage1_exact_match import reconcile_full
 from .schemas import FullReconciliationResult
+from .stage1_exact_match import (
+    _load_bank_df,
+    _load_merchant_df,
+    _load_razorpay_df,
+    reconcile_full,
+)
+from .stage3_exception_reasoner import reconcile_exceptions
 
-app = FastAPI(title="AI Finance Controller - Stages 1 and 2")
+
+app = FastAPI(title="AI Finance Controller - Stages 1, 2 and 3")
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,7 +28,12 @@ app.add_middleware(
 
 def _read_csv_upload(upload: UploadFile) -> pd.DataFrame:
     content = upload.file.read()
-    return pd.read_csv(io.BytesIO(content), dtype=str, keep_default_na=False)
+
+    return pd.read_csv(
+        io.BytesIO(content),
+        dtype=str,
+        keep_default_na=False,
+    )
 
 
 @app.post("/reconcile", response_model=FullReconciliationResult)
@@ -32,11 +46,48 @@ async def reconcile_endpoint(
     razorpay_df = _read_csv_upload(razorpay_file)
     bank_df = _read_csv_upload(bank_file)
 
-    return reconcile_full(
+    result = reconcile_full(
         merchant_df=merchant_df,
         razorpay_df=razorpay_df,
         bank_df=bank_df,
     )
+
+    if not result.stage3_handoffs:
+        return result
+
+    merchant_rows, _ = _load_merchant_df(merchant_df)
+    razorpay_rows, _ = _load_razorpay_df(razorpay_df)
+    bank_rows, _ = _load_bank_df(bank_df)
+
+    internal_handoffs = [
+        {
+            "record": handoff.record,
+            "status": handoff.status,
+            "score": handoff.score,
+            "amount_diff_paise": handoff.amount_diff_paise,
+            "date_diff_days": handoff.date_diff_days,
+            "error_code": handoff.error_code,
+            "failed_gates": handoff.failed_gates,
+            "reason": handoff.reason,
+            "source_record_id": handoff.source_record_id,
+            "candidate_record_id": handoff.candidate_record_id,
+            "review_evidence": (
+                handoff.review_evidence.model_dump()
+                if handoff.review_evidence is not None
+                else None
+            ),
+        }
+        for handoff in result.stage3_handoffs
+    ]
+
+    result.stage3_results = reconcile_exceptions(
+        stage3_handoffs=internal_handoffs,
+        merchant_rows=merchant_rows,
+        razorpay_rows=razorpay_rows,
+        bank_rows=bank_rows,
+    )
+
+    return result
 
 
 @app.get("/health")

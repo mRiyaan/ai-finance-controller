@@ -3,7 +3,10 @@ __pycache__/
 *.pyc
 .env
 venv/
-
+# Secrets
+.env
+.env.*
+!.env.example
 # Node
 node_modules/
 .next/

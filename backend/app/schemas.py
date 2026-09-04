@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -310,9 +310,10 @@ class UnresolvedRecord(BaseModel):
     reason: str
     context: dict = Field(default_factory=dict)
 
+
 class Stage3HandoffResponse(BaseModel):
     record: UnresolvedRecord
-    status: str  # "POTENTIAL_FUZZY_MATCH" or "EXCEPTION"
+    status: Literal["POTENTIAL_FUZZY_MATCH", "EXCEPTION"]
     score: float
     amount_diff_paise: int
     date_diff_days: Optional[int] = None
@@ -320,7 +321,185 @@ class Stage3HandoffResponse(BaseModel):
     failed_gates: List[str] = Field(default_factory=list)
     reason: str
 
-# Combined Stage 1 + Stage 2 API response model
+    source_record_id: Optional[str] = None
+    candidate_record_id: Optional[str] = None
+    review_evidence: Optional["Stage3ReviewEvidence"] = None
+
+
+# Stage 1 internal result model
+
+
+class ReconciliationResult(BaseModel):
+    matched_ledger_razorpay: List[MatchedLedgerRazorpay] = Field(
+        default_factory=list
+    )
+    amount_mismatches: List[AmountMismatchRecord] = Field(
+        default_factory=list
+    )
+    matched_settlements_bank: List[MatchedSettlementBank] = Field(
+        default_factory=list
+    )
+    settlement_amount_mismatches: List[SettlementAmountMismatch] = Field(
+        default_factory=list
+    )
+    unresolved_records: List[UnresolvedRecord] = Field(
+        default_factory=list
+    )
+    dead_letters: List[DeadLetterRow] = Field(
+        default_factory=list
+    )
+    summary: dict = Field(default_factory=dict)
+
+
+# Stage 3 LLM and reviewer-evidence models
+
+
+Stage3LLMStatus = Literal[
+    "STRONG_POTENTIAL_MATCH",
+    "EXCEPTION",
+    "NEEDS_MANUAL_REVIEW",
+]
+
+Stage3ReviewState = Literal[
+    "PENDING_REVIEW",
+    "MATCHED_BY_REVIEWER",
+    "CONFIRMED_EXCEPTION",
+    "INVESTIGATED",
+]
+
+
+class Stage3LLMOutput(BaseModel):
+    """
+    Strict JSON contract for Gemini.
+
+    Gemini may recommend a strong potential match, explain an exception,
+    or request manual review. It must never return MATCHED or RESOLVED.
+    """
+
+    status: Stage3LLMStatus
+    error_code: Optional[
+        Literal[
+            "MISSING_SETTLEMENT_UTR",
+            "DATE_OFFSET_EXCEEDED",
+            "FEE_MISMATCH",
+            "UNLINKED_ADJUSTMENT",
+            "AMOUNT_MISMATCH",
+            "OTHER",
+        ]
+    ] = None
+    reasoning: str = Field(..., min_length=50, max_length=900)
+    reported_amount_paise: Optional[int] = None
+    source_record_token: Optional[str] = None
+    candidate_record_token: Optional[str] = None
+    human_approval_required: bool = False
+
+
+class TokenMetadata(BaseModel):
+    """
+    Request-scoped metadata for a real identifier represented by an LLM token.
+
+    Example:
+    SETTLEMENT_001 -> real settlement ID, role="source",
+    field="settlement_id", source="razorpay".
+    """
+
+    real_value: str
+    role: Literal["source", "candidate", "secondary"]
+    field: str
+    source: Literal["merchant", "razorpay", "bank"]
+
+
+class Stage3ComparisonEvidence(BaseModel):
+    """
+    Deterministic comparison values produced by Stage 2.
+
+    Gemini may explain these values but cannot recalculate or override them.
+    """
+
+    similarity_score: float
+    amount_diff_paise: int
+    date_diff_days: Optional[int] = None
+    failed_gates: List[str] = Field(default_factory=list)
+
+
+class Stage3ReviewerLookup(BaseModel):
+    """
+    Trusted search keys for locating source rows in the uploaded CSV files.
+    """
+
+    merchant_csv_search: Optional[str] = None
+    razorpay_csv_search: Optional[str] = None
+    bank_csv_search: Optional[str] = None
+
+
+class Stage3ReviewEvidence(BaseModel):
+    """
+    Authoritative reviewer-facing evidence.
+
+    This evidence is built from trusted Stage 1 and Stage 2 data. It may
+    contain real IDs for the internal reviewer UI. Gemini must later receive
+    a separate masked/tokenized evidence payload.
+    """
+
+    exception_id: str
+    comparison_type: str
+    comparison_field: str
+    source_record: Dict[str, Any] = Field(default_factory=dict)
+    candidate_record: Dict[str, Any] = Field(default_factory=dict)
+    comparison: Stage3ComparisonEvidence
+    review_lookup: Stage3ReviewerLookup = Field(
+        default_factory=Stage3ReviewerLookup
+    )
+
+
+class Stage3ExceptionResult(BaseModel):
+    """
+    Final Stage 3 backend result for one unresolved reconciliation item.
+
+    Stage 1 and Stage 2 remain the deterministic financial source of truth.
+    This model contains only the validated Gemini assistance and trusted
+    reviewer evidence. It does not create an automatic financial match.
+    """
+
+    record_id: str
+    source: str
+
+    stage2_status: Literal["POTENTIAL_FUZZY_MATCH", "EXCEPTION"]
+    stage2_error_code: Optional[str] = None
+    stage2_failed_gates: List[str] = Field(default_factory=list)
+
+    # Backward-compatible field used by the current Stage 3 implementation.
+    grounding: Dict[str, Any] = Field(default_factory=dict)
+
+    llm_status: Stage3LLMStatus
+    llm_error_code: Optional[str] = None
+    llm_reasoning: str
+    llm_reported_amount_paise: Optional[int] = None
+    llm_model_used: Optional[str] = None
+    models_attempted: List[str] = Field(default_factory=list)
+
+    ground_truth_amount_diff_paise: int
+    numeric_cross_check_passed: bool
+
+    # These will be populated when token validation is implemented.
+    identifier_cross_check_passed: bool = False
+    human_approval_required: bool = False
+
+    # Trusted real IDs for the future internal frontend.
+    source_record_id: Optional[str] = None
+    candidate_record_id: Optional[str] = None
+    review_evidence: Optional[Stage3ReviewEvidence] = None
+
+    # Session-level future reviewer state only. It must not mutate Stage 1/2.
+    review_state: Stage3ReviewState = "PENDING_REVIEW"
+
+    used_fallback: bool = False
+    fallback_reason: Optional[str] = None
+
+
+# Combined Stage 1 + Stage 2 + Stage 3 API response model
+
+
 class FullReconciliationResult(BaseModel):
     matched_ledger_razorpay: List[MatchedLedgerRazorpay] = Field(
         default_factory=list
@@ -343,30 +522,12 @@ class FullReconciliationResult(BaseModel):
     stage3_handoffs: List[Stage3HandoffResponse] = Field(
         default_factory=list
     )
-    dead_letters: List[DeadLetterRow] = Field(
-        default_factory=list
-    )
-    summary: dict = Field(default_factory=dict)
-
-
-# Stage 1 internal result model
-class ReconciliationResult(BaseModel):
-    matched_ledger_razorpay: List[MatchedLedgerRazorpay] = Field(
-        default_factory=list
-    )
-    amount_mismatches: List[AmountMismatchRecord] = Field(
-        default_factory=list
-    )
-    matched_settlements_bank: List[MatchedSettlementBank] = Field(
-        default_factory=list
-    )
-    settlement_amount_mismatches: List[SettlementAmountMismatch] = Field(
-        default_factory=list
-    )
-    unresolved_records: List[UnresolvedRecord] = Field(
+    stage3_results: List[Stage3ExceptionResult] = Field(
         default_factory=list
     )
     dead_letters: List[DeadLetterRow] = Field(
         default_factory=list
     )
     summary: dict = Field(default_factory=dict)
+
+Stage3HandoffResponse.model_rebuild()
