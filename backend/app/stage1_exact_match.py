@@ -499,18 +499,15 @@ def reconcile_full(
     """
     Run Stage 1 exact reconciliation and Stage 2 fuzzy reconciliation.
 
-    Stage 3 is not called yet. Remaining Stage 2 records are returned
-    as stage3_handoffs with their scores and gate-failure information.
+    Stage 3 is not called here. Remaining Stage 2 records are returned as
+    enriched stage3_handoffs, including trusted source/candidate evidence.
     """
-    # Run the already-tested Stage 1 pipeline.
     stage1_result = reconcile(
         merchant_df=merchant_df,
         razorpay_df=razorpay_df,
         bank_df=bank_df,
     )
 
-    # Rebuild the same canonical rows using the same loaders.
-    # This uses the corrected raw-to-paise conversion and UTR extraction.
     merchant_rows, _ = _load_merchant_df(merchant_df)
     razorpay_rows, _ = _load_razorpay_df(razorpay_df)
     bank_rows, _ = _load_bank_df(bank_df)
@@ -534,6 +531,9 @@ def reconcile_full(
             error_code=handoff["error_code"],
             failed_gates=handoff["failed_gates"],
             reason=handoff["reason"],
+            source_record_id=handoff["source_record_id"],
+            candidate_record_id=handoff["candidate_record_id"],
+            review_evidence=handoff["review_evidence"],
         )
         for handoff in stage3_handoffs
     ]
