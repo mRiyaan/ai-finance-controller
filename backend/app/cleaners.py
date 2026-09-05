@@ -2,135 +2,142 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime
 import re
 from typing import Optional
+
 from dateutil import parser as dateutil_parser
 
 
-# Unified date formats list (used by parse_datetime_to_iso)
 DATE_INPUT_FORMATS = (
-    "%Y-%m-%d %H:%M:%S",      # 2026-08-27 10:15:00
-    "%Y-%m-%d",               # 2026-08-27
-    "%d/%m/%Y %H:%M:%S",      # 27/08/2026 10:15:00
-    "%d/%m/%Y",               # 27/08/2026
-    "%m/%d/%Y %H:%M:%S",      # 08/27/2026 10:15:00
-    "%m/%d/%Y",               # 08/27/2026
-    "%Y-%m-%dT%H:%M:%S",      # 2026-08-27T10:15:00
-    "%Y-%m-%dT%H:%M:%SZ",     # 2026-08-27T10:15:00Z
-    "%d-%m-%Y %H:%M:%S",      # 27-08-2026 10:15:00
-    "%d-%m-%Y",               # 27-08-2026
-    "%Y/%m/%d %H:%M:%S",      # 2026/08/27 10:15:00
-    "%Y/%m/%d",               # 2026/08/27
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d",
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y",
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%SZ",
+    "%d-%m-%Y %H:%M:%S",
+    "%d-%m-%Y",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d",
 )
 
 PAISE_PER_RUPEE = 100
 
+# UTRs such as HDFCINBB20260829001234, ICICR20260830007891.
+UTR_PATTERN = re.compile(r"\b[A-Z0-9]{12,22}\b")
 
-def normalize_amount_to_paise(raw: Optional[str]) -> int:
+# Currency prefixes that may contain punctuation (notably "Rs.").
+_CURRENCY_PREFIX_RE = re.compile(
+    r"^\s*(?:₹|rs\.?|inr)\s*",
+    flags=re.IGNORECASE,
+)
+
+# Complete numeric token validation. Reject arbitrary text instead of silently
+# stripping letters from a malformed amount.
+_NUMERIC_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
+
+
+def normalize_amount_to_paise(raw: object) -> int:
     """
-    Convert a raw amount string (e.g. '1,250.00', '₹1,250.00') to integer paise.
+    Convert a raw rupee amount into integer paise.
 
-    Raises ValueError if the input cannot be parsed.
+    Supports common banking/export formats such as:
+    - 1,250.00
+    - ₹1,250.00
+    - Rs. 11,130.82
+    - INR 2,199.90
+    - -320.00
+    - (320.00)
+
+    Missing or malformed values raise ValueError. The sign is preserved so
+    refund/adjustment rows can participate correctly in settlement aggregation.
     """
     if raw is None:
         raise ValueError("Amount is required")
 
     value = str(raw).strip()
-    if value == "":
-        raise ValueError("Amount is empty")
+    if value.lower() in {"", "nan", "none", "null"}:
+        raise ValueError("Amount is required")
 
-    # Remove thousands separators
-    value = value.replace(",", "")
+    value = _CURRENCY_PREFIX_RE.sub("", value)
 
-    # Remove non-numeric / non-dot characters such as currency symbols
-    value = re.sub(r"[^\d\.]", "", value)
+    negative_parentheses = value.startswith("(") and value.endswith(")")
+    if negative_parentheses:
+        value = value[1:-1].strip()
+
+    value = value.replace(",", "").replace(" ", "")
+
+    if not _NUMERIC_RE.fullmatch(value):
+        raise ValueError(f"Invalid amount: {raw}")
 
     try:
         decimal_value = Decimal(value)
     except InvalidOperation as exc:
         raise ValueError(f"Invalid amount: {raw}") from exc
 
-    paise = int(decimal_value * PAISE_PER_RUPEE)
-    return paise
+    if negative_parentheses:
+        decimal_value = -decimal_value
+
+    # Financial pipeline contract: all downstream arithmetic is integer paise.
+    return int(decimal_value * PAISE_PER_RUPEE)
 
 
 def parse_datetime_to_iso(raw: Optional[str]) -> Optional[str]:
-    """
-    Parse a date/time string from various common formats and return an ISO string.
-
-    Returns None for None or empty strings.
-    Raises ValueError if the format cannot be recognized.
-    """
+    """Parse a common CSV date/time representation into an ISO string."""
     if raw is None or (isinstance(raw, str) and raw.strip() == ""):
         return None
 
-    raw = raw.strip()
+    raw_text = str(raw).strip()
 
-    # Try explicit formats first (fast and deterministic)
     for fmt in DATE_INPUT_FORMATS:
         try:
-            dt = datetime.strptime(raw, fmt)
+            dt = datetime.strptime(raw_text, fmt)
             return dt.isoformat()
         except ValueError:
             continue
 
-    # Fallback: dateutil parser for flexible, real-world CSV formats
     try:
-        dt = dateutil_parser.parse(raw)
+        dt = dateutil_parser.parse(raw_text)
         return dt.isoformat()
-    except (ValueError, TypeError, OverflowError):
-        raise ValueError(f"Unrecognized date format: {raw}")
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ValueError(f"Unrecognized date format: {raw_text}") from exc
 
 
-def normalize_identifier(raw: Optional[str]) -> Optional[str]:
-    """
-    Trim whitespace and normalize an identifier/UTR/order ID to uppercase.
-
-    Returns None for blank/None inputs.
-    """
+def normalize_identifier(raw: object) -> Optional[str]:
+    """Trim whitespace and uppercase an optional identifier."""
     if raw is None:
         return None
 
     text = str(raw).strip()
-    if text == "":
+    if not text or text.lower() in {"nan", "none", "null"}:
         return None
 
     return text.upper()
 
 
-# UTRs such as HDFCINBB20260829001234, ICICR20260830007891:
-# uppercase alphanumeric, typically 16–22 characters.
-UTR_PATTERN = re.compile(r"\b[A-Z0-9]{12,22}\b")
-
-
 def extract_utr_from_description(description: Optional[str]) -> Optional[str]:
-    """
-    Deterministically extract a UTR-shaped string from a bank narration/description.
-
-    Returns the first candidate containing both letters and digits, or None if none found.
-    """
+    """Extract the first UTR-shaped alphanumeric reference from a narration."""
     if description is None:
         return None
 
     text = str(description).upper()
-    matches = UTR_PATTERN.findall(text)
-
-    for candidate in matches:
-        # Require at least one letter and one digit to avoid plain words or numbers
+    for candidate in UTR_PATTERN.findall(text):
         if any(ch.isdigit() for ch in candidate) and any(ch.isalpha() for ch in candidate):
             return candidate
 
     return None
 
 
-def get_bank_reference_or_utr(reference_number: Optional[str],
-                              description: Optional[str]) -> Optional[str]:
+def get_bank_reference_or_utr(
+    reference_number: Optional[str],
+    description: Optional[str],
+) -> Optional[str]:
     """
-    Use the explicit bank reference_number if present; otherwise fall back
-    to regex extraction from description/narration.
-
-    This is still deterministic Stage 1 matching logic.
+    Prefer the bank's explicit reference_number, otherwise extract a UTR from
+    the narration. This remains deterministic Stage 1 logic.
     """
-    ref = normalize_identifier(reference_number)
-    if ref:
-        return ref
+    reference = normalize_identifier(reference_number)
+    if reference:
+        return reference
 
     return extract_utr_from_description(description)

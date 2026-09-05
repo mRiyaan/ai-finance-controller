@@ -687,8 +687,8 @@ class TestClassifyExceptionRetryAndFallback:
         assert result.llm_reported_amount_paise == 830128
         assert result.numeric_cross_check_passed is True
         assert result.identifier_cross_check_passed is True
-        assert result.llm_model_used == "gemini-3.8-flash"
-        assert result.models_attempted == ["gemini-3.8-flash"]
+        assert result.llm_model_used == s3.GEMINI_MODEL_CHAIN[0]
+        assert result.models_attempted == [s3.GEMINI_MODEL_CHAIN[0]]
 
         assert "SETL_S005" in result.llm_reasoning
         assert "HDFCINBB202680044" in result.llm_reasoning
@@ -728,10 +728,10 @@ class TestClassifyExceptionRetryAndFallback:
         assert calls["count"] == 2
         assert result.used_fallback is False
         assert result.llm_status == "EXCEPTION"
-        assert result.llm_model_used == "gemini-3.8-flash"
+        assert result.llm_model_used == s3.GEMINI_MODEL_CHAIN[0]
         assert result.models_attempted == [
-            "gemini-3.8-flash",
-            "gemini-3.8-flash",
+            s3.GEMINI_MODEL_CHAIN[0],
+            s3.GEMINI_MODEL_CHAIN[0],
         ]
 
     def test_falls_back_after_invalid_json(self, monkeypatch):
@@ -865,7 +865,9 @@ class TestClassifyExceptionRetryAndFallback:
         assert result.llm_model_used is None
         assert result.numeric_cross_check_passed is False
         assert result.identifier_cross_check_passed is False
-        assert len(result.models_attempted) == 6
+        assert len(result.models_attempted) == (
+            len(s3.GEMINI_MODEL_CHAIN) * s3.MAX_TRANSIENT_RETRIES_PER_MODEL
+        )
 
 
 class TestStrongPotentialMatchWorkflow:
@@ -1192,3 +1194,59 @@ class TestModelFailover:
             "gemini-3.7-flash": 15,
             "gemini-3.6-flash": 15,
         }
+
+class TestCandidateFreeStage3Handoff:
+    def test_duplicate_bank_handoff_masks_without_inventing_candidate(self):
+        handoff = {
+            "record": UnresolvedRecord(
+                record_id="SF_DUP",
+                source="razorpay",
+                reason="DUPLICATE_BANK_UTR",
+                context={
+                    "settlement_utr": "UTR-DUP-001",
+                },
+            ),
+            "status": "EXCEPTION",
+            "score": 0.0,
+            "amount_diff_paise": 0,
+            "date_diff_days": None,
+            "error_code": "OTHER",
+            "failed_gates": ["OTHER"],
+            "reason": "Duplicate bank UTR; no bank row selected.",
+            "source_record_id": "SF_DUP",
+            "candidate_record_id": None,
+            "review_evidence": {
+                "exception_id": "EXC-SETTLEMENT-SF_DUP",
+                "comparison_type": "SETTLEMENT_TO_BANK",
+                "comparison_field": "razorpay.settlement_utr ↔ bank.utr",
+                "source_record": {
+                    "settlement_id": "SF_DUP",
+                    "settlement_utr": "UTR-DUP-001",
+                    "expected_net_paise": 120000,
+                },
+                "candidate_record": {},
+                "comparison": {
+                    "similarity_score": 0.0,
+                    "amount_diff_paise": 0,
+                    "date_diff_days": None,
+                    "failed_gates": ["OTHER"],
+                },
+                "review_lookup": {
+                    "merchant_csv_search": None,
+                    "razorpay_csv_search": "SF_DUP",
+                    "bank_csv_search": "UTR-DUP-001",
+                },
+            },
+        }
+
+        masked, real_to_token, token_to_real, token_metadata = (
+            s3.build_tokenized_grounding(handoff=handoff)
+        )
+
+        serialized = json.dumps(masked)
+        assert "UTR-DUP-001" not in serialized
+        assert masked["candidate_record"]["candidate_record_token"] is None
+        assert real_to_token["UTR-DUP-001"] != masked["candidate_record"]["candidate_record_token"]
+        assert token_metadata
+        assert all(meta["role"] != "candidate" for meta in token_metadata.values())
+        assert all(real != "UTR-DUP-001" or token for token, real in token_to_real.items())

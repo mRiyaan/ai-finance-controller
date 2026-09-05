@@ -28,3 +28,4 @@ uvloop==0.22.1
 watchfiles==1.2.0
 websockets==17.1
 google-genai==2.22.0
+rapidfuzz==3.14.3
