@@ -26,6 +26,6 @@ typing_extensions==4.16.0
 uvicorn==0.52.4
 uvloop==0.22.1
 watchfiles==1.2.0
-websockets==17.1
+websockets==16.0
 google-genai==2.22.0
 rapidfuzz==3.14.3
