@@ -1,5 +1,5 @@
 import io
-
+import os
 import pandas as pd
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,9 +17,33 @@ from .stage3_exception_reasoner import reconcile_exceptions
 app = FastAPI(title="AI Finance Controller - Stages 1, 2 and 3")
 
 
+# Production/development origins.
+
+DEFAULT_ALLOWED_ORIGINS = (
+    "https://ai-finance-controller-git-main-m-riyaan.vercel.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://ai-finance-controller-liard-xi.vercel.app/",
+    "https://ai-finance-controller-k34l9q8ug-m-riyaan.vercel.app/",
+
+)
+
+
+def _get_allowed_origins() -> list[str]:
+    configured_origins = os.getenv("ALLOWED_ORIGINS", "")
+    if configured_origins.strip():
+        return [
+            origin.strip().rstrip("/")
+            for origin in configured_origins.split(",")
+            if origin.strip()
+        ]
+
+    return list(DEFAULT_ALLOWED_ORIGINS)
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
