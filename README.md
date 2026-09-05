@@ -57,37 +57,7 @@ Stage 1 and Stage 2 own financial truth. Stage 3 does not rewrite their results,
 
 ---
 
-## The important numbers from the verified adversarial batch
 
-The final production-style Cloud Run smoke test processed the full adversarial batch successfully.
-
-| Metric | Result |
-|---|---:|
-| Merchant rows | 84 |
-| Razorpay rows | 89 |
-| Bank rows | 64 |
-| Valid merchant rows | 83 |
-| Valid Razorpay rows | 88 |
-| Valid bank rows | 63 |
-| Exact ledger → Razorpay | 70 |
-| Fuzzy ledger → Razorpay | 4 |
-| Ledger reconciled links | 74 |
-| Exact settlement → bank | 5 |
-| Fuzzy settlement → bank | 0 |
-| Settlement amount mismatches | 1 |
-| Stage 3 handoffs | 11 |
-| Dead letters | 3 |
-| Backend-approved matches | 79 |
-
-`79` is a **backend-owned outcome count**. It is deliberately not reconstructed by the frontend from multiple arrays.
-
-For the valid merchant population, the batch produced a ledger resolution rate of:
-
-`74 / 83 = 89.2%`
-
-That is a **resolution rate**, not a statistical model-accuracy claim. A true accuracy claim needs independently labelled ground truth. The evaluation methodology is documented in [`docs/EVALUATION_AND_TESTING.md`](docs/EVALUATION_AND_TESTING.md).
-
----
 
 ## What makes the AI safe here
 
@@ -137,38 +107,6 @@ Dead letters are preserved instead of being silently discarded. The frontend pro
 
 ---
 
-## Repository structure
-
-```text
-ai-finance-controller/
-├── README.md
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── RECONCILIATION_PIPELINE.md
-│   ├── PROBLEMS_AND_SOLUTIONS.md
-│   ├── EVALUATION_AND_TESTING.md
-│   ├── DEPLOYMENT.md
-│   └── diagrams/
-├── sample-data/
-│   ├── baseline / initial CSV dataset
-│   └── adversarial CSV dataset
-├── backend/
-│   ├── app/
-│   ├── tests/
-│   ├── Dockerfile
-│   ├── .dockerignore
-│   ├── .env.example
-│   └── requirements.txt
-└── frontend/
-    ├── src/
-    ├── public/
-    ├── package.json
-    └── next.config.mjs
-```
-
-The repository keeps both the original/cherry-picked sample dataset and the adversarial dataset in one root-level `sample-data/` directory.
-
----
 
 ## Stack
 
