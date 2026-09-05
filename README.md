@@ -51,64 +51,7 @@ The design intentionally avoids a multi-agent workflow because financial reconci
 
 ## How the system works
 
-```mermaid
-flowchart TB
-    U["User / Finance Reviewer"]
-
-    subgraph FE["Frontend - Vercel"]
-        N["Next.js Reviewer Dashboard"]
-        UP["CSV Upload"]
-        RES["Results / Exceptions / Dead Letters"]
-        REV["Session-only Review Actions"]
-        UP --> N
-        N --> RES
-        N --> REV
-    end
-
-    subgraph CR["Backend - Google Cloud Run"]
-        API["FastAPI API"]
-        VAL["Ingestion + Validation"]
-        CLEAN["Normalization<br/>Amounts -> Integer Paise<br/>Dates + Identifiers"]
-        S1["Stage 1<br/>Deterministic Exact Matching"]
-        S2["Stage 2<br/>Guarded Fuzzy Matching"]
-        S3["Stage 3<br/>Grounded Exception Reasoning"]
-        DL["Dead Letters"]
-        JSON["Backend-owned JSON Response"]
-
-        API --> VAL --> CLEAN --> S1 --> S2 --> S3
-        VAL --> DL
-        S1 --> JSON
-        S2 --> JSON
-        S3 --> JSON
-        DL --> JSON
-    end
-
-    subgraph AI["Gemini"]
-        G["Gemini Flash-Lite<br/>Exception Assistance Only"]
-    end
-
-    subgraph SEC["Google Cloud Security"]
-        SM["Secret Manager<br/>GEMINI_API_KEY"]
-    end
-
-    U --> FE
-    N -- "HTTPS POST /reconcile" --> API
-    S3 -- "Grounded evidence<br/>+ failed gates" --> G
-    G -- "Structured reasoning" --> S3
-    SM --> G
-    JSON -- "Validated JSON" --> N
-
-    classDef user fill:#eef3ff,stroke:#315efb,stroke-width:1px
-    classDef frontend fill:#eaf7ef,stroke:#20a35a,stroke-width:1px
-    classDef backend fill:#f4f6f8,stroke:#44546a,stroke-width:1px
-    classDef ai fill:#fff3dc,stroke:#d88a00,stroke-width:1px
-    classDef security fill:#f7ecff,stroke:#8a45c5,stroke-width:1px
-    class U user
-    class N,UP,RES,REV frontend
-    class API,VAL,CLEAN,S1,S2,S3,DL,JSON backend
-    class G ai
-    class SM security
-```
+![AI Finance Controller system architecture](docs/diagrams/system-architecture.png)
 
 Stage 1 and Stage 2 own financial truth. Stage 3 does not rewrite their results, and the frontend does not recalculate reconciliation. See [`docs/RECONCILIATION_PIPELINE.md`](docs/RECONCILIATION_PIPELINE.md).
 
