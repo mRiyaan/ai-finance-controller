@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs>
+  <linearGradient id="floorG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#f6f9fc"/></linearGradient>
+  <linearGradient id="frontA" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#bfe2f5"/><stop offset="1" stop-color="#55add0"/></linearGradient>
+  <linearGradient id="sideA" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#15618f"/><stop offset="1" stop-color="#073e67"/></linearGradient>
+  <linearGradient id="frontB" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#dfe8f8"/><stop offset="1" stop-color="#a8bae0"/></linearGradient>
+  <linearGradient id="sideB" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#3e59c4"/><stop offset="1" stop-color="#203aa0"/></linearGradient>
+  <linearGradient id="frontC" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#d5e8fb"/><stop offset="1" stop-color="#9bc4e8"/></linearGradient>
+  <linearGradient id="sideC" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#149bd3"/><stop offset="1" stop-color="#0878b3"/></linearGradient>
+  <linearGradient id="frontD" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#cdf0f0"/><stop offset="1" stop-color="#55b8cf"/></linearGradient>
+  <filter id="ds" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#8fa1b2" flood-opacity=".22"/></filter>
+</defs>
+
+<!-- Isometric floor only: white object on an otherwise transparent canvas -->
+<g filter="url(#ds)">
+  <polygon points="58,558 466,319 958,584 529,858" fill="url(#floorG)" stroke="#eef3f8" stroke-width="3"/>
+</g>
+<polyline points="61,558 466,321 956,584 529,856 61,558" fill="none" stroke="#ffffff" stroke-width="7" stroke-linejoin="round"/>
+
+<!-- route paths -->
+<g fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M300 619 L451 531 L398 500 L458 461 L595 539 L700 489 L792 540 L699 600 L783 654 L665 731 L533 659 L453 697 L300 618" stroke="#ffb2ad" stroke-width="18"/>
+  <path d="M300 619 L451 531 L398 500 L458 461" stroke="#ffd0ca" stroke-width="5"/>
+</g>
+
+<!-- tall building upper-left -->
+<g>
+  <polygon points="358,174 424,135 521,185 454,224" fill="#2b9fc4"/>
+  <polygon points="358,174 454,224 454,439 358,389" fill="url(#frontA)"/>
+  <polygon points="454,224 521,185 521,401 454,439" fill="url(#sideA)"/>
+  <g stroke="#ffffff" stroke-opacity=".28" stroke-width="3">
+    <line x1="358" y1="226" x2="454" y2="276"/><line x1="454" y1="276" x2="521" y2="237"/>
+    <line x1="358" y1="279" x2="454" y2="329"/><line x1="454" y1="329" x2="521" y2="290"/>
+    <line x1="358" y1="332" x2="454" y2="382"/><line x1="454" y1="382" x2="521" y2="343"/>
+  </g>
+  <polygon points="394,151 425,133 449,145 419,163" fill="#e9f1f7"/>
+  <polygon points="468,190 497,173 519,185 490,202" fill="#e9f1f7"/>
+  <polygon points="399,210 443,233 443,260 399,237" fill="#ffffff"/>
+  <polygon points="407,216 422,224 422,237 407,229" fill="#51e2bc"/>
+  <polygon points="423,225 435,231 435,242 423,236" fill="#7debcf"/>
+  <polygon points="411,371 437,385 437,436 411,423" fill="#1c5a90"/>
+</g>
+
+<!-- center building -->
+<g>
+  <polygon points="521,365 602,319 665,351 584,399" fill="#304dc0"/>
+  <polygon points="521,365 584,399 584,588 521,554" fill="url(#frontB)"/>
+  <polygon points="584,399 665,351 665,541 584,588" fill="url(#sideB)"/>
+  <g stroke="#ffffff" stroke-opacity=".26" stroke-width="3">
+    <line x1="521" y1="411" x2="584" y2="445"/><line x1="584" y1="445" x2="665" y2="397"/>
+    <line x1="521" y1="459" x2="584" y2="493"/><line x1="584" y1="493" x2="665" y2="445"/>
+    <line x1="521" y1="507" x2="584" y2="541"/><line x1="584" y1="541" x2="665" y2="493"/>
+  </g>
+  <polygon points="545,412 576,429 576,451 545,434" fill="#ffffff"/>
+  <polygon points="551,418 563,424 563,436 551,430" fill="#54e3bd"/>
+  <polygon points="522,549 584,583 584,603 522,568" fill="#ffffff"/>
+  <g stroke="#2f50bd" stroke-width="6">
+    <line x1="529" y1="556" x2="529" y2="570"/><line x1="540" y1="562" x2="540" y2="576"/>
+    <line x1="551" y1="568" x2="551" y2="582"/><line x1="562" y1="574" x2="562" y2="588"/>
+    <line x1="573" y1="580" x2="573" y2="594"/>
+  </g>
+</g>
+
+<!-- right building -->
+<g>
+  <polygon points="704,332 780,291 835,321 759,366" fill="#61c4e3"/>
+  <polygon points="704,332 759,366 759,532 704,499" fill="url(#frontC)"/>
+  <polygon points="759,366 835,321 835,487 759,532" fill="url(#sideC)"/>
+  <line x1="704" y1="374" x2="759" y2="408" stroke="#ffffff" stroke-opacity=".22" stroke-width="3"/>
+  <line x1="759" y1="408" x2="835" y2="363" stroke="#ffffff" stroke-opacity=".18" stroke-width="3"/>
+  <polygon points="741,513 776,532 776,554 741,535" fill="#e8f1f8"/>
+  <polygon points="776,532 797,520 797,543 776,554" fill="#b8d7ee"/>
+</g>
+
+<!-- front-left low building -->
+<g>
+  <polygon points="236,511 305,469 379,509 310,550" fill="#58c0de"/>
+  <polygon points="236,511 310,550 310,701 236,662" fill="url(#frontC)"/>
+  <polygon points="310,550 379,509 379,659 310,701" fill="url(#frontD)"/>
+  <polygon points="252,498 304,468 349,493 297,524" fill="#68c7e3"/>
+  <polygon points="288,575 326,596 326,632 288,611" fill="#57d5ba"/>
+  <polygon points="326,596 357,578 357,614 326,632" fill="#5ec2df"/>
+  <polygon points="238,648 261,661 261,684 238,671" fill="#3d64c7"/>
+  <polygon points="261,661 284,674 284,697 261,684" fill="#2450ae"/>
+</g>
+
+<!-- small utility block -->
+<g>
+  <polygon points="799,503 839,481 866,496 826,519" fill="#61c3df"/>
+  <polygon points="799,503 826,519 826,547 799,532" fill="#d9e8f7"/>
+  <polygon points="826,519 866,496 866,524 826,547" fill="#bfd8ee"/>
+</g>
+
+<!-- green trees -->
+<g fill="#41dfad" stroke="none">
+  <path d="M311 446 C298 432 301 416 313 411 C309 400 322 394 331 403 C338 392 351 399 347 411 C359 414 355 429 344 436 C347 448 330 456 319 449 Z"/>
+  <path d="M627 699 C615 685 618 669 630 664 C626 653 639 648 648 656 C655 646 668 652 664 664 C675 668 672 683 662 689 C665 702 648 709 638 703 Z"/>
+</g>
+<g stroke="#67af92" stroke-width="5" stroke-linecap="round">
+  <line x1="326" y1="442" x2="326" y2="468"/><line x1="643" y1="695" x2="643" y2="721"/>
+</g>
+
+<!-- traffic cones -->
+<g fill="#ff6d86">
+  <polygon points="376,449 386,449 392,474 370,474"/>
+  <polygon points="406,438 415,438 421,462 400,462"/>
+</g>
+<g fill="#ffffff">
+  <rect x="372" y="445" width="18" height="5" rx="2"/>
+  <rect x="402" y="434" width="17" height="5" rx="2"/>
+</g>
+</svg>
