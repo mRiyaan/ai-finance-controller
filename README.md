@@ -4,7 +4,7 @@
 
 Recon AI Finance Controller is a deterministic-first reconciliation system for merchant ledger data, Razorpay payment/settlement data, and bank statements. It resolves the cases that can be proved with rules first, then uses Gemini only for the smaller set of unresolved cases that need explanation or reviewer assistance.
 
-**Live Demo:** [https://ai-finance-controller-git-main-m-riyaan.vercel.app/ ](https://ai-finance-controller-liard-xi.vercel.app/) 
+**Live Demo:** https://ai-finance-controller-liard-xi.vercel.app/
 **Backend / Swagger:** https://ai-finance-controller-826949991342.asia-south1.run.app/docs  
 **GitHub:** https://github.com/mRiyaan/ai-finance-controller
 
