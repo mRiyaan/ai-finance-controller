@@ -45,7 +45,7 @@ export default function Header() {
 
         <div>
           <p className="eyebrow">Razorpay AI Buildathon 2026 · Track 04</p>
-          <h1>AI Finance Controller</h1>
+          <h1>Recon AI - Finance Reconciler</h1>
         </div>
       </div>
 
