@@ -86,6 +86,24 @@ NEEDS_MANUAL_REVIEW
 
 A Gemini response cannot turn a deterministic exception into a financial match by itself.
 
+## What broke at 2 AM — and how I fixed it
+
+The adversarial data and end-to-end testing exposed several real issues that were not visible with the clean sample data:
+
+- **Date and amount parsing:** Different CSV formats caused valid rows to fail validation, and paise values could be converted twice. I moved normalization to the ingestion boundary and made the data canonical before reconciliation.
+
+- **Unsafe fuzzy matches:** Some IDs had high similarity even when the amount or date was wrong. I added strict amount, date, and similarity gates so identifier similarity alone could never create a financial match.
+
+- **Adversarial-data failures:** Missing IDs became `NaN` join keys, refund amounts were mishandled, date-window edge cases appeared, non-payment Razorpay rows affected matching, and duplicate UTRs could create incorrect outputs. I fixed these in the deterministic reconciliation layer and added regression coverage.
+
+- **Stage 2 evidence and handoff:** Unresolved records could be handed off more than once, and a bank UTR was being lost so fuzzy matching compared against narration instead of the actual reference. I fixed the handoff flow and preserved the selected source/candidate evidence.
+
+- **Gemini grounding:** Gemini needed to reason without becoming the source of financial truth. I added masked request-scoped IDs, a strict response schema, token-to-real-ID validation, numeric cross-checking, status gating, and manual-review fallback. Gemini can assist with unresolved cases, but cannot create or overwrite a financial match.
+
+- **Reviewer UI data contract:** The first result structure did not expose enough trusted evidence for review. I expanded the backend response with source/candidate IDs, comparison data, failed gates, and review evidence so the UI displays backend-owned facts rather than reconstructing them from LLM text.
+
+For the complete technical history and how each issue was resolved, see [`docs/PROBLEMS_AND_SOLUTIONS.md`](docs/PROBLEMS_AND_SOLUTIONS.md).
+
 ---
 
 ## Transparency
@@ -234,7 +252,6 @@ The repository contains two useful categories of data:
 2. **Adversarial dataset** — deliberately contains edge cases that exercise the exception, validation and Stage 3 paths.
 
 The adversarial dataset is especially important for the project because the Buildathon asks for an honest exception list rather than a cherry-picked happy path.
-
 
 ---
 
