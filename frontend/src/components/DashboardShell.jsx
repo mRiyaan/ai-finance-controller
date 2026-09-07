@@ -99,7 +99,7 @@ export default function DashboardShell() {
                     ? "Batch processed locally"
                     : "Ready for reconciliation"}
                 </strong>
-                <span>FastAPI backend connected locally</span>
+                
               </div>
             </div>
 
